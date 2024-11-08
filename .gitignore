@@ -171,3 +171,5 @@ src/CVI/
 credentials/
 
 notebooks/cache/
+
+data/
