@@ -171,3 +171,7 @@ src/CVI/
 credentials/
 
 notebooks/cache/
+
+data/
+
+notebooks/rag_embeddings.ipynb
