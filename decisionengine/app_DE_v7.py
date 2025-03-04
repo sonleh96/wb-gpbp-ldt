@@ -1,33 +1,16 @@
-#### Project Analysis + Relevant Projects Included  #### 
+#### Tries function calling: Relevant Column is maybe not giving the right column names #### 
 #Import required libraries
 import os 
 
 import streamlit as st
-from streamlit_chat import message
 import pandas as pd
 
 from openai import OpenAI
-#from langchain_experimental.agents import create_pandas_dataframe_agent
-from dotenv import load_dotenv, find_dotenv
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.embeddings.openai import OpenAIEmbeddings
-
-#from langchain.chains import RetrievalQA
-from langchain.chains import ConversationalRetrievalChain
-from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferMemory
-from langchain.chat_models import ChatOpenAI
-from langchain.agents import AgentType
 
 import apikey
-
-#PineCone Libraries
-#from pinecone import Pinecone, ServerlessSpec
-#from langchain_community.vectorstores import Pinecone as PineconeVectorStore  # Update for Pinecone vector store
-
+import json
 
 os.environ["OPENAI_API_KEY"] = apikey.openai_apikey
-#os.environ["PINECONE_API_KEY"] = apikey.pinecone_apikey
 
 #Title for the StreamLit App
 st.title("LDT Decision Engine")
@@ -56,13 +39,12 @@ if 'analysis_completed' not in st.session_state:
 #### List of Regions ####
 df_regions = pd.read_csv("srb_data_random.csv")
 df_indicators = pd.read_csv("indicators_full_df.csv")
+df_indicatorlist = pd.read_csv("Indicator List.csv")
 df_projects = pd.read_csv("wbif_project_examples.csv")
 regions = df_regions['NAME_2'].tolist()
 
 #### Create a DataFrame of National Averages ####
-indicators = df_indicators.columns[3:]
-average_values = df_indicators[indicators].mean()
-averages_df = pd.DataFrame(average_values, columns=['national_average']).reset_index()
+averages_df = pd.DataFrame(df_indicators[df_indicators.columns[3:]].mean(), columns=['national_average'])
 
 #Global Variables for the OpenAI Calls
 client = OpenAI()
@@ -101,15 +83,89 @@ option_category = st.selectbox(
     index = None
     )
 
+def copy_to_clipboard_button(text):
+    st.components.v1.html(
+        f"""
+        <div>
+            <textarea id="copyText" style="display:none;">{text}</textarea>
+            <button onclick="copyToClipboard()" 
+                style="padding: 8px 16px; background-color: #dfe5f5; color: black; border: none; border-radius: 4px; cursor: pointer;">
+                Copy to Clipboard
+            </button>
+        </div>
+        <script>
+            function copyToClipboard() {{
+                var copyText = document.getElementById('copyText');
+                copyText.style.display = 'block';
+                copyText.select();
+                document.execCommand('copy');
+                copyText.style.display = 'none';
+                alert('Text copied to clipboard!');
+            }}
+        </script>
+        """,
+        height=50,
+    )
+
+
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "extract_relevant_data",
+        "description": "Extract relevant columns from a particular dataset based on the region we are interested in and the columns relevant to the subcategory being analyzed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "region": {
+                    "type": "string",
+                    "description": "Region being analyzed and of which the data needs to be extracted"
+                },
+                "relevant_columns": {
+                    "type": "array",
+                    "description": "List of column titles that should be extracted from the dataset because they are relevant to the subcategory we are analyzing",
+                    "items": { "type": "string" }  
+                }
+            },
+            "required": ["region"],  
+            "additionalProperties": False
+        }
+    }
+}]
+
+def extract_regional_data(df, region, relevant_columns):
+    """
+    Filters the DataFrame based on the specified region and relevant columns.
+
+    Parameters:
+    - df (pd.DataFrame): The dataset containing all regions and indicators.
+    - region (str): The region to filter by, matching df["GID_2"].
+    - relevant_columns (list): List of column names to keep in the filtered dataset.
+
+    Returns:
+    - pd.DataFrame: The filtered DataFrame containing only the specified region and relevant columns.
+    """
+    # Ensure relevant columns exist in the DataFrame
+    valid_columns = ["NAME_2"] + [col for col in relevant_columns if col in df.columns]
+    return df.loc[df["NAME_2"] == region, valid_columns]
+
+
+def extract_national_data(df, relevant_columns):
+    df = df.T 
+    valid_columns = [col for col in relevant_columns if col in df.columns]
+
+    return df[valid_columns]
+
+
 st.write("Region selected:", option_region)
 st.write("Category selected:", option_category)
 
-df_indicator_list = pd.read_csv("Indicator List.csv")
-
 def df_indicatorlist_analysis(category_temp, df_temp):
-    df_indicators = df_temp[df_temp['SubCategory'] == category_temp]
-    json_str = df_indicators.to_json(orient='records')
-    question_output = "From the attached dataframe which indicators belong to the following subcategory?"  + str(category_temp) + "Mention the full name of the indicator in bold followed by ':' and its full description in regular text. Make sure the indicators are logically relevant to the category. Extract the meanings of the indicators from the system prompts. This is the dataframe:" + str(json_str)
+    json_columns = df_temp.to_json(orient='records')
+    question_output = f"""From the attached dataframe, which indicators belong to the following subcategory? {category_temp}
+        Mention the full name of the indicator (not the column title) in **bold**, followed by ':' and its full description in regular text.
+        Ensure the indicators are logically relevant to the category based on the provided information.
+        This is the dataframe: {json_columns}"""
+    
     
     messages = [
     {"role": "system", "content": system_message},  # System message
@@ -123,50 +179,64 @@ def df_indicatorlist_analysis(category_temp, df_temp):
 
     return response.choices[0].message.content
 
-def regional_analyis(region_temp, relevant_indicators):
-    df_temp = df_indicators[df_indicators['NAME_2'] == region_temp]
-    json_str = df_temp.to_json(orient='records')
+def regional_analysis(region_temp, relevant_indicators):
+    json_columns = df_indicators.columns[3:].tolist()  # Convert to list instead of str
 
-    question_output_2 = "Based on this response" + str(relevant_indicators) + "extract all relevant indicators included to the region of " + str(region_temp) + ". Explain the performance of the region. Here is the dataset" + str(json_str) 
-    messages = [
-        {"role": "system", "content": system_message},  # System message
-        {"role": "user", "content": question_output_2}]  # User message
-    
-    response_2 = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            temperature=1
-        )
+    # Optimized prompt using f-string
+    question_output_2 = (
+        f"Based on this response: {relevant_indicators}, extract all relevant indicators, column titles, mentioned in this response only for the region of {regions[4]}. Ensure all mentioned indicators are extracted to explain the region's performance. The dataset looks like this: {json_columns}."
+    )
 
-    #print(response_2.choices[0].message.content)
-    ##### Add the comparison with the national averages here
-    json_national = averages_df.to_json(orient = 'records')
-    question_national = "For each of the following list of indicators:" + str(relevant_indicators) + ", extract the national average, one after the other. All of them exist in this dataframe:" + json_national
-    messages = [
-        {"role": "system", "content": question_national},  # System message
-        {"role": "user", "content": question_output_2}]
-    
-    response_national = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            temperature=1
-        )
-    
-    response_regional = response_2.choices[0].message.content
-
-    user_message = "Compare the regional performance found here to the national average. Output your answer as bullet points with the indicator as the title in bold. Include the regional performance, national performance, relevant units and analysis. Only include the indicators found in this response: " + str(response_regional) + str(response_national.choices[0].message.content) + ". At the end, summarize what this means about the regional level performance."
     messages = [
         {"role": "system", "content": system_message},
-        {"role": "user", "content": user_message}
-    ]
+        {"role": "user", "content": question_output_2}
+    ] 
 
-    comparison = client.chat.completions.create(
+    response_2 = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        temperature=1,
+        tools=tools,
+        tool_choice="auto"
+    )
+
+    # Extract tool call results
+    tool_calls = response_2.choices[0].message.tool_calls
+    relevant_columns = []
+    region = None
+
+    for tool in tool_calls:
+        if tool.function.name == "extract_relevant_data":
+            arguments_dict = json.loads(tool.function.arguments)
+            region = arguments_dict.get("region")
+            relevant_columns = arguments_dict.get("relevant_columns", [])
+
+    if relevant_columns:
+        regional_df = extract_regional_data(df_indicators, region, relevant_columns).to_json(orient='records')
+        national_df = extract_national_data(averages_df, relevant_columns).to_json(orient='records')
+
+        print(regional_df)
+        print(national_df)
+
+        # Improved comparison prompt
+        user_message = (
+            f"Compare the regional performance found here to the national average. Make sure to mention all the indicators.\n"
+            f"- **Format:** Bullet points with indicators in **bold**.\n"
+            f"- Include regional performance, national performance, units, and analysis.\n"
+            f"- Use only the indicators from this response, ensuring all are included.\n\n"
+            f"Regional Data: {regional_df}\nNational Data: {national_df}\n\n"
+            f"Finally, summarize what this means for regional performance."
+        )
+
+        messages.append({"role": "user", "content": user_message})
+
+        comparison = client.chat.completions.create(
             model="gpt-4o",
             messages=messages,
             temperature=1
         )
 
-    return comparison.choices[0].message.content
+        return comparison.choices[0].message.content
 
 def project_recommendation_agent(region_temp, subcategory, regional_analysis):
 
@@ -206,42 +276,23 @@ if 'project_recommendations_completed' not in st.session_state:
 if st.button("Let's get started"):
     if not st.session_state.analysis_completed:
         st.write("Starting analysis...")
-        response_written = df_indicatorlist_analysis(option_category, df_indicator_list) 
-        st.session_state.response_written = response_written
+        relevant_indicators = df_indicatorlist_analysis(option_category, df_indicatorlist) 
+        st.session_state.relevant_indicators = relevant_indicators
         #st.session_state.response_list = response_list
         st.session_state.analysis_completed = True  # Set flag to True after first execution
 
 # Display the initial analysis result if it exists in session state
-if st.session_state.get("response_written"):
-    st.write(st.session_state.response_written)
-    st.components.v1.html(
-        f"""
-        <div>
-            <textarea id="copyText" style="display:none;">{st.session_state.response_written}</textarea>
-            <button onclick="copyToClipboard()" style="padding: 8px 16px; background-color: #dfe5f5; color: black; border: none; border-radius: 4px; cursor: pointer;">
-                Copy to Clipboard
-            </button>
-        </div>
-        <script>
-            function copyToClipboard() {{
-                var copyText = document.getElementById('copyText');
-                copyText.style.display = 'block';
-                copyText.select();
-                document.execCommand('copy');
-                copyText.style.display = 'none';
-                alert('Text copied to clipboard!');
-            }}
-        </script>
-        """,
-        height=50,
-    )
+if st.session_state.get("relevant_indicators"):
+    st.write(st.session_state.relevant_indicators)
+    copy_to_clipboard_button(st.session_state.relevant_indicators)
+
 
 # Second button only appears after the first analysis is complete
 if st.session_state.analysis_completed:
     if st.button("Let's conduct a Regional Analysis") and not st.session_state.regional_analysis_completed:
         st.write("Conducting Regional Analysis...")
         #indicator_meanings_result = indicator_meanings(df, st.session_state.response_written)
-        regional_analysis_results = regional_analyis(option_region, st.session_state.response_written)
+        regional_analysis_results = regional_analysis(option_region, st.session_state.relevant_indicators)
         st.session_state.regional_analysis_results = regional_analysis_results
         st.session_state.regional_analysis_completed = True
         #st.write(regional_analysis_results)
@@ -249,27 +300,8 @@ if st.session_state.analysis_completed:
 # Display regional analysis if it exists
 if st.session_state.get("regional_analysis_results"):
     st.write(st.session_state.regional_analysis_results)
-    st.components.v1.html(
-        f"""
-        <div>
-            <textarea id="copyText" style="display:none;">{st.session_state.response_written}</textarea>
-            <button onclick="copyToClipboard()" style="padding: 8px 16px; background-color: #dfe5f5; color: black; border: none; border-radius: 4px; cursor: pointer;">
-                Copy to Clipboard
-            </button>
-        </div>
-        <script>
-            function copyToClipboard() {{
-                var copyText = document.getElementById('copyText');
-                copyText.style.display = 'block';
-                copyText.select();
-                document.execCommand('copy');
-                copyText.style.display = 'none';
-                alert('Text copied to clipboard!');
-            }}
-        </script>
-        """,
-        height=50,
-    )
+    copy_to_clipboard_button(st.session_state.regional_analysis_results)
+
 
 if st.session_state.regional_analysis_completed == True:
       # Ensure function only runs once
@@ -281,24 +313,5 @@ if st.session_state.regional_analysis_completed == True:
 
 if st.session_state.get("project_recommendations"):
     st.write(st.session_state.project_recommendations)
-    st.components.v1.html(
-        f"""
-        <div>
-            <textarea id="copyText" style="display:none;">{st.session_state.response_written}</textarea>
-            <button onclick="copyToClipboard()" style="padding: 8px 16px; background-color: #dfe5f5; color: black; border: none; border-radius: 4px; cursor: pointer;">
-                Copy to Clipboard
-            </button>
-        </div>
-        <script>
-            function copyToClipboard() {{
-                var copyText = document.getElementById('copyText');
-                copyText.style.display = 'block';
-                copyText.select();
-                document.execCommand('copy');
-                copyText.style.display = 'none';
-                alert('Text copied to clipboard!');
-            }}
-        </script>
-        """,
-        height=50,
-    )
+    copy_to_clipboard_button(st.session_state.project_recommendations)
+
